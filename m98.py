@@ -116,7 +116,6 @@ if __name__ == '__main__':
     m.enable(False)
     m.battery_mode(0.1, 0.8)
 
-    l = log.Log(csv.writer(sys.stdout), m.voltage, m.current, m.capacity)
-
     with m.enable(True):
-        l.run(1, condition=m.enabled)
+        for data in log.log(m.voltage, m.current, m.capacity, interval=1, condition=m.enabled):
+            print(data)
