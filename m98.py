@@ -85,12 +85,14 @@ class M98:
             self._cmd(Cmd.CC_Soft)
         else:
             self._cmd(Cmd.CC)
+        return (self.voltage, self.current)
 
     def battery_mode(self, current, end_voltage, start_capacity=0):
         self.conn.write_registers(Reg.IFIX, _float(current), skip_encode=True, unit=1)
         # set end voltage and reset start capacity
         self.conn.write_registers(Reg.UBATTEND, _float(end_voltage, start_capacity), skip_encode=True, unit=1)
         self._cmd(Cmd.Battery_Test)
+        return (self.voltage, self.current, self.capacity)
 
     def voltage(self):
         return _defloat(self.conn.read_holding_registers(Reg.U, 2, unit=1).registers)[0]
@@ -102,20 +104,56 @@ class M98:
         return _defloat(self.conn.read_holding_registers(Reg.BATT, 2, unit=1).registers)[0]
 
 
+def cmd_battery(args):
+    m = M98(port=args.port, baudrate=args.baudrate)
+    m.enable(False)
+    out = csv.writer(args.out)
+    fields = m.battery_mode(current=args.current, end_voltage=args.end_voltage)
+    with m.enable(True):
+        for data in log.log(*fields, interval=args.interval, condition=m.enabled):
+            out.writerow(data)
+
+def cmd_cc(args):
+    m = M98(port=args.port, baudrate=args.baudrate)
+    m.enable(False)
+    out = csv.writer(args.out)
+    fields = m.cc_mode(current=args.current, risetime=args.risetime)
+    with m.enable(True):
+        for data in log.log(*fields, interval=args.interval, condition=m.enabled):
+            out.writerow(data)
+
+def add_parsers(parser):
+    parser.add_argument('--port', type=str, required=True)
+    parser.add_argument('--baudrate', type=int, default=9600)
+    subp = parser.add_subparsers()
+    batp = subp.add_parser('battery', help='Battery constant current test')
+    batp.add_argument('--current', '-i', type=float, required=True)
+    batp.add_argument('--end-voltage', '-v', type=float, required=True)
+    batp.add_argument('--interval', type=float, default=1.0)
+    batp.add_argument('--out', '-o', type=argparse.FileType('w'), default=sys.stdout)
+    batp.set_defaults(func=cmd_battery)
+
+    ccp = subp.add_parser('cc', aliases=['constant-current'], help='Constant current test')
+    ccp.add_argument('--current', '-i', type=float, required=True)
+    ccp.add_argument('--risetime', type=float, default=None)
+    ccp.add_argument('--interval', type=float, default=1.0)
+    ccp.add_argument('--out', '-o', type=argparse.FileType('w'), default=sys.stdout)
+    ccp.set_defaults(func=cmd_cc)
+
+
 if __name__ == '__main__':
     import logging
     import sys
     import os
-    import time
-    import log
     import csv
+    import argparse
+
+    import log
 
     logging.basicConfig(level=os.environ.get('LOGLEVEL', 'INFO'))
 
-    m = M98(port=sys.argv[1], baudrate=int(sys.argv[2]))
-    m.enable(False)
-    m.battery_mode(0.1, 0.8)
+    parser = argparse.ArgumentParser(description='M98 Electronic Load Remote Control')
+    add_parsers(parser)
+    args = parser.parse_args()
 
-    with m.enable(True):
-        for data in log.log(m.voltage, m.current, m.capacity, interval=1, condition=m.enabled):
-            print(data)
+    args.func(args)
