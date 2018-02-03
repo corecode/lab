@@ -1,5 +1,6 @@
 import enum
 import struct
+import time
 
 from pymodbus.client.sync import ModbusSerialClient
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
@@ -81,7 +82,7 @@ class M98:
     def cc_mode(self, current, risetime=None):
         self.conn.write_registers(Reg.IFIX, _float(current), skip_encode=True, unit=1)
         if risetime:
-            self.conn.write_registers(Reg.TMCCS, _float(risetime), skip_encode=True, unit=1)
+            self.conn.write_registers(Reg.TMCCS, _float(risetime*1000), skip_encode=True, unit=1)
             self._cmd(Cmd.CC_Soft)
         else:
             self._cmd(Cmd.CC)
@@ -104,41 +105,51 @@ class M98:
         return _defloat(self.conn.read_holding_registers(Reg.BATT, 2, unit=1).registers)[0]
 
 
-def cmd_battery(args):
-    m = M98(port=args.port, baudrate=args.baudrate)
-    m.enable(False)
-    out = csv.writer(args.out)
-    fields = m.battery_mode(current=args.current, end_voltage=args.end_voltage)
-    with m.enable(True):
-        for data in log.log(*fields, interval=args.interval, condition=m.enabled):
-            out.writerow(data)
+class Command:
+    @classmethod
+    def _run(cls, args):
+        m = M98(port=args.port, baudrate=args.baudrate)
+        fields = args.mode(m, args)
+        out = None
+        if args.out:
+            out = csv.writer(args.out)
+        with m.enable(True):
+            header, stream = log.log(*fields, interval=args.interval, condition=m.enabled)
+            if out:
+                out.writerow(header)
+            for data in stream:
+                if out:
+                    out.writerow(data)
+                else:
+                    t = ''
+                    s = ''
+                    for k,v in zip(header, data):
+                        if k != 'time':
+                            s += ' %s=%0.5f' % (k,v)
+                        else:
+                            t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(v))
+                    print(t + s)
 
-def cmd_cc(args):
-    m = M98(port=args.port, baudrate=args.baudrate)
-    m.enable(False)
-    out = csv.writer(args.out)
-    fields = m.cc_mode(current=args.current, risetime=args.risetime)
-    with m.enable(True):
-        for data in log.log(*fields, interval=args.interval, condition=m.enabled):
-            out.writerow(data)
+    @classmethod
+    def _generic_parser(cls, p, mode):
+        p.add_argument('--interval', type=float, default=1.0)
+        p.add_argument('--out', '-o', type=argparse.FileType('w'))
+        p.set_defaults(func=cls._run, mode=mode)
 
-def add_parsers(parser):
-    parser.add_argument('--port', type=str, required=True)
-    parser.add_argument('--baudrate', type=int, default=9600)
-    subp = parser.add_subparsers()
-    batp = subp.add_parser('battery', help='Battery constant current test')
-    batp.add_argument('--current', '-i', type=float, required=True)
-    batp.add_argument('--end-voltage', '-v', type=float, required=True)
-    batp.add_argument('--interval', type=float, default=1.0)
-    batp.add_argument('--out', '-o', type=argparse.FileType('w'), default=sys.stdout)
-    batp.set_defaults(func=cmd_battery)
+    @classmethod
+    def add_parsers(cls, parser):
+        parser.add_argument('--port', type=str, required=True)
+        parser.add_argument('--baudrate', type=int, default=9600)
+        subp = parser.add_subparsers()
+        batp = subp.add_parser('battery', help='Battery constant current test')
+        batp.add_argument('--current', '-i', type=float, required=True)
+        batp.add_argument('--end-voltage', '-v', type=float, required=True)
+        cls._generic_parser(batp, lambda m, args: m.battery_mode(current=args.current, end_voltage=args.end_voltage))
 
-    ccp = subp.add_parser('cc', aliases=['constant-current'], help='Constant current test')
-    ccp.add_argument('--current', '-i', type=float, required=True)
-    ccp.add_argument('--risetime', type=float, default=None)
-    ccp.add_argument('--interval', type=float, default=1.0)
-    ccp.add_argument('--out', '-o', type=argparse.FileType('w'), default=sys.stdout)
-    ccp.set_defaults(func=cmd_cc)
+        ccp = subp.add_parser('cc', aliases=['constant-current'], help='Constant current test')
+        ccp.add_argument('--current', '-i', type=float, required=True)
+        ccp.add_argument('--risetime', type=float, default=None)
+        cls._generic_parser(ccp, lambda m, args: m.cc_mode(current=args.current, risetime=args.risetime))
 
 
 if __name__ == '__main__':
@@ -153,7 +164,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=os.environ.get('LOGLEVEL', 'INFO'))
 
     parser = argparse.ArgumentParser(description='M98 Electronic Load Remote Control')
-    add_parsers(parser)
+    Command.add_parsers(parser)
     args = parser.parse_args()
 
     args.func(args)
