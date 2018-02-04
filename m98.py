@@ -1,6 +1,8 @@
 import enum
 import struct
 import time
+import os
+import csv
 
 from pymodbus.client.sync import ModbusSerialClient
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
@@ -110,30 +112,27 @@ class Command:
     def _run(cls, args):
         m = M98(port=args.port, baudrate=args.baudrate)
         fields = args.mode(m, args)
-        out = None
-        if args.out:
-            out = csv.writer(args.out)
+        l = log.Log(*fields)
+
+        if not args.out:
+            args.out = open(os.devnull, 'w')
+            args.verbose = True
+
         with m.enable(True):
-            header, stream = log.log(*fields, interval=args.interval, condition=m.enabled)
-            if out:
-                out.writerow(header)
-            for data in stream:
-                if out:
-                    out.writerow(data)
-                else:
-                    t = ''
-                    s = ''
-                    for k,v in zip(header, data):
-                        if k != 'time':
-                            s += ' %s=%0.5f' % (k,v)
-                        else:
-                            t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(v))
-                    print(t + s)
+            csvout = csv.writer(args.out)
+            csvout.writerow(l.names)
+            for data in l.run(interval=args.interval, condition=m.enabled):
+                if args.verbose:
+                    print(l.pretty_record(data))
+                csvout.writerow(data)
+                args.out.flush()
+
 
     @classmethod
     def _generic_parser(cls, p, mode):
         p.add_argument('--interval', type=float, default=1.0)
         p.add_argument('--out', '-o', type=argparse.FileType('w'))
+        p.add_argument('--verbose', action='store_const', const=True, default=False)
         p.set_defaults(func=cls._run, mode=mode)
 
     @classmethod
